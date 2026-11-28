@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MBTI 펭귄 서바이벌</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&display=swap">
+<!--REEL-->
+<style>
+/* 9:16 한 화면(릴스 비율) + 아래 버튼 줄. 갈라지는 얼음판 위 MBTI 펭귄 16마리 밀어내기 */
+:root{--bg:#06172b;--panel:#13294a;--line:#24416b;--ink:#f3f8ff;--muted:#93a9c9;--gold:#ffd166;--accent:#3fb6ff;color-scheme:dark}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:"Gothic A1",system-ui,sans-serif;margin:0;box-sizing:border-box;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;overflow:hidden;touch-action:manipulation;
+  padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+canvas{display:block;border-radius:14px;box-shadow:0 0 0 1px var(--line),0 20px 60px rgba(0,0,0,.6);cursor:pointer;max-width:100%;touch-action:none;-webkit-tap-highlight-color:transparent}
+.bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center}
+button{font:inherit;font-weight:700;font-size:14px;padding:10px 18px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:#04203a;border-color:transparent}
+button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.hint{color:var(--muted);font-size:12px}
+</style>
+<canvas id="c" aria-label="MBTI 펭귄 서바이벌 게임 화면. 가고 싶은 곳을 탭하면 내 펭귄이 그쪽으로 돌진해요"></canvas>
+<div class="bar" id="bar">
+  <button class="primary" id="again">MBTI 다시 고르기</button>
+  <button id="share">결과 공유</button>
+  <button id="snd">소리 켜짐</button>
+  <span class="hint">가고 싶은 곳을 탭하면 돌진!</span>
+</div>
+<script>
+// REEL 모드(릴스 촬영용, penguin.js가 window.REEL을 넣음): 전부 봇, 시드 고정, frame(t)로 1/30초씩 앞으로만 진행.
+// 물리는 1/240초 고정 스텝이라 같은 시드면 같은 판이 나온다.
+const REEL=!!window.REEL;
+const W=360, VH=640, S=3, CX=180, CY=400, R0=148, PR=13, DT=1/240, FRICTION=2.6;
+const FONT=REEL?'P':'"Gothic A1"';
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+cv.width=W*S; cv.height=VH*S;
+if(REEL){document.getElementById('bar').style.display='none';document.body.style.padding='0';cv.style.borderRadius='0';cv.style.boxShadow='none'}
+function fit(){if(REEL)return;const bh=document.getElementById('bar').offsetHeight;const h=Math.min(innerHeight-bh-40,(innerWidth-32)*16/9);cv.style.height=h+'px';cv.style.width=h*9/16+'px'}
+addEventListener('resize',fit); fit();
+
+const TYPES=['INTJ','INTP','ENTJ','ENTP','INFJ','INFP','ENFJ','ENFP','ISTJ','ISFJ','ESTJ','ESFJ','ISTP','ISFP','ESTP','ESFP'];
+const GCOL=['#a98bff','#34d6a0','#4aa8ff','#ffbe3b']; // 분석·외교·관리·탐험 네 묶음 (색은 직접 고름)
+const col=i=>GCOL[i>>2];
+
+let seed=1; const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+let vseed=7; const vr=()=>(vseed=(vseed*16807)%2147483647)/2147483647; // 그림용 난수(물리 난수와 분리)
+
+// 얼음판이 줄어드는 시점(초)과 반지름. 끝나지 않으면 5초마다 계속 줄어든다
+const STAGES=[[7,122],[12,100],[17,80],[22,62],[28,48],[33,38],[38,30]], WARN=1.6;
+
+let zoom=1, countT=0, warnedI, ps, simT, vt, state, Rcur, stageI, chunks, splashes, EV, ranks, winner, meId, finalOn, doneT, cool, snow, ts, slowWin;
+const ev=(type,extra={})=>EV.push({type,t:+vt.toFixed(3),...extra});
+const alive=()=>ps.filter(p=>p.alive);
+function reset(sd,me=-1){
+  seed=sd; vseed=sd%2147483646+1;
+  const order=TYPES.map((_,i)=>[rnd(),i]).sort((a,b)=>a[0]-b[0]).map(a=>a[1]);
+  ps=order.map((ti,k)=>{const a=k/16*Math.PI*2-Math.PI/2,d=k%2?112:84;
+    return {ti,type:TYPES[ti],x:CX+Math.cos(a)*d,y:CY+Math.sin(a)*d*.96,vx:0,vy:0,alive:true,fallT:0,face:Math.cos(a)>0?-1:1,
+      st:'idle',timer:.6+rnd()*1.6,tg:null,brave:.6+rnd()*.7,flip:0,sink:0,rank:0}});
+  meId=me; simT=0; vt=0; state=REEL?'title':(me<0?'pick':'count'); Rcur=R0; stageI=0; chunks=[]; splashes=[]; EV=[]; ranks=[]; winner=null; finalOn=false; doneT=0; cool=0; ts=1; countT=0; warnedI=-1; zoom=1;
+  snow=Array.from({length:60},()=>({x:vr()*W,y:vr()*VH,s:.6+vr()*1.6,v:12+vr()*22}));
+}
+const stageAt=i=>i<STAGES.length?STAGES[i]:[STAGES[STAGES.length-1][0]+5*(i-STAGES.length+1),Math.max(24,30*Math.pow(.85,i-STAGES.length+1))];
+const warnR=()=>{const [t,r]=stageAt(stageI);return simT>=t-WARN?r:null};
+
+function hitSound(p,q,sp){ ev('hit',{v:Math.round(sp)}); }
+function step(){
+  simT+=DT;
+  // 얼음판 줄이기
+  const [st,sr]=stageAt(stageI);
+  if(simT>=st-WARN&&warnedI<stageI){warnedI=stageI;ev('crack',{i:stageI})}
+  if(simT>=st){
+    const n=12, oldR=Rcur;
+    for(let k=0;k<n;k++){const a0=k/n*Math.PI*2+vr()*.1,a1=(k+1)/n*Math.PI*2;chunks.push({a0,a1,r0:sr,r1:oldR,dx:0,dy:0,v:18+vr()*20,life:0,rot:0,spin:(vr()-.5)*.6})}
+    Rcur=sr; stageI++; ev('break',{r:sr});
+  }
+  const A=alive(), safe=(warnR()??Rcur);
+  for(const p of ps){
+    if(!p.alive){p.sink+=DT;p.vx*=Math.exp(-4*DT);p.vy*=Math.exp(-4*DT);p.x+=p.vx*DT;p.y+=p.vy*DT;continue}
+    p.timer-=DT; p.flip=Math.max(0,p.flip-DT);
+    const dx=p.x-CX,dy=p.y-CY,dc=Math.hypot(dx,dy)||1;
+    if(p.ti!==meId){
+      if(p.st==='idle'){
+        // 가장자리면 안쪽으로 종종걸음 (겁 많은 펭귄일수록 일찍)
+        if(dc>safe-PR*2.2*p.brave){p.vx-=dx/dc*320*DT;p.vy-=dy/dc*320*DT}
+        if(p.timer<=0&&A.length>1){
+          const others=A.filter(q=>q!==p).sort((a,b)=>Math.hypot(a.x-p.x,a.y-p.y)-Math.hypot(b.x-p.x,b.y-p.y));
+          p.tg=others[Math.floor(rnd()*Math.min(3,others.length))]; p.st='wind'; p.timer=.3+rnd()*.35;
+        }
+      }else if(p.st==='wind'){
+        if(!p.tg.alive){p.st='idle';p.timer=.2}
+        else{p.face=p.tg.x>p.x?1:-1;
+          if(p.timer<=0){
+            const ax=p.tg.x-p.x,ay=p.tg.y-p.y,d=Math.hypot(ax,ay)||1,a=Math.atan2(ay,ax)+(rnd()-.5)*.3,sp=Math.min(330,Math.max(160,FRICTION*(d+26+rnd()*30)));
+            p.vx+=Math.cos(a)*sp; p.vy+=Math.sin(a)*sp; p.st='dash'; p.timer=.5; ev('dash');
+          }}
+      }else if(p.st==='dash'&&p.timer<=0){p.st='idle';p.timer=.5+rnd()*1.2}
+    }
+    const f=Math.exp(-FRICTION*DT); p.vx*=f; p.vy*=f;
+    const sp=Math.hypot(p.vx,p.vy); if(sp>420){p.vx*=420/sp;p.vy*=420/sp}
+    p.x+=p.vx*DT; p.y+=p.vy*DT;
+    if(Math.abs(p.vx)>20) p.face=p.vx>0?1:-1;
+  }
+  // 펭귄끼리 부딪힘 (같은 무게, 거의 탄성 충돌: 돌진한 쪽이 멈추고 맞은 쪽이 미끄러진다)
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++){
+    const a=ps[i],b=ps[j]; if(!a.alive||!b.alive) continue;
+    const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy,R=PR*2; if(d2>=R*R||d2<1e-6) continue;
+    const d=Math.sqrt(d2),nx=dx/d,ny=dy/d,pen=(R-d)/2; a.x-=nx*pen;a.y-=ny*pen;b.x+=nx*pen;b.y+=ny*pen;
+    const rv=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
+    if(rv<0){const J=-1.02*rv;a.vx-=J*nx;a.vy-=J*ny;b.vx+=J*nx;b.vy+=J*ny;
+      if(-rv>110){hitSound(a,b,-rv);(Math.hypot(a.vx,a.vy)>Math.hypot(b.vx,b.vy)?a:b).flip=.35;a.last=b;b.last=a}}
+  }
+  // 물에 빠지기
+  const out=alive().filter(p=>Math.hypot(p.x-CX,p.y-CY)>Rcur+2);
+  if(out.length){
+    let left=alive().length-out.length;
+    if(left<=0){out.sort((a,b)=>Math.hypot(a.x-CX,a.y-CY)-Math.hypot(b.x-CX,b.y-CY));const s=out.shift(),dd=Math.hypot(s.x-CX,s.y-CY);s.x=CX+(s.x-CX)/dd*(Rcur-PR);s.y=CY+(s.y-CY)/dd*(Rcur-PR);s.vx=s.vy=0;left=1}
+    out.sort((a,b)=>Math.hypot(b.x-CX,b.y-CY)-Math.hypot(a.x-CX,a.y-CY)); // 동시에 빠지면 더 멀리 나간 쪽이 먼저(낮은 순위)
+    out.forEach((p,k)=>{p.alive=false;p.rank=left+out.length-k;p.fallT=simT;ranks.unshift(p);splashes.push({x:p.x,y:p.y,t:0});ev('fall',{ti:p.ti,left:p.rank-1,me:p.ti===meId})});
+    if(left===2&&!finalOn){finalOn=true;ev('final')}
+    if(left===1){winner=alive()[0];winner.rank=1;ranks.unshift(winner);state='done';doneT=0;ev('win',{ti:winner.ti})}
+  }
+  for(const c of chunks){c.life+=DT;c.rot+=c.spin*DT}
+  chunks=chunks.filter(c=>c.life<2.4);
+}
+
+// 비디오 한 프레임(릴스) 또는 화면 한 프레임(게임)만큼 진행
+const TITLE_S=1.4, COUNT_S=1.8, HOLD_S=5;
+function advance(dt){
+  if(state==='title'&&vt>=TITLE_S){state='count';countT=0}
+  if(state==='count'){const k=Math.floor(countT/(COUNT_S/3));if(k>=3){state='play';ev('go')}else if(EV.filter(e=>e.type==='count').length<=k)ev('count');countT+=dt}
+  if(state==='play'){
+    ts=slowWin&&simT>=slowWin[0]&&simT<=slowWin[1]?.35:(!REEL&&meId>=0&&!ps[ps.findIndex(p=>p.ti===meId)].alive?2:1);
+    const n=Math.round(dt*ts/DT); for(let i=0;i<n&&state==='play';i++) step();
+    cool=Math.max(0,cool-dt);
+  }
+  if(state==='done') doneT+=dt;
+  zoom+=(Math.min(2.1,Math.max(1,128/Rcur))-zoom)*Math.min(1,dt*1.6);
+  for(const s of splashes) s.t+=dt;
+  for(const f of snow){f.y+=f.v*dt;f.x+=Math.sin(vt*.8+f.s*3)*6*dt;if(f.y>VH){f.y=-4;f.x=vr()*W}}
+  vt+=dt;
+}
+
+/* ---------- 그림 ---------- */
+const F=(w,s)=>`${w} ${s}px ${FONT}, sans-serif`;
+function txt(t,x,y,font,c,align='center',stroke=0){ctx.font=font;ctx.textAlign=align;ctx.textBaseline='middle';if(stroke){ctx.lineWidth=stroke;ctx.strokeStyle='rgba(3,14,30,.92)';ctx.lineJoin='round';ctx.strokeText(t,x,y)}ctx.fillStyle=c;ctx.fillText(t,x,y)}
+function pill(x,y,w,h,c){ctx.beginPath();ctx.roundRect(x,y,w,h,h/2);ctx.fillStyle=c;ctx.fill()}
+function ell(x,y,rx,ry,c){ctx.beginPath();ctx.ellipse(x,y,rx,ry,0,0,7);ctx.fillStyle=c;ctx.fill()}
+function penguin(p,x,y,k=1,alpha=1,crown=false,label=true){
+  if(alpha<=0) return;
+  const r=PR*k, wind=p.st==='wind', dash=p.st==='dash'&&Math.hypot(p.vx,p.vy)>90, bob=Math.sin(vt*6+p.ti)*.6*k;
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(x,y);
+  ell(0,r*.55,r*1.05,r*.38,'rgba(10,40,70,.28)'); // 그림자
+  ctx.translate(0,bob); ctx.rotate(dash?p.face*.35:p.flip>0?Math.sin(p.flip*40)*.25:0);
+  if(dash){ctx.strokeStyle='rgba(255,255,255,.55)';ctx.lineWidth=1.4*k;for(let i=-1;i<=1;i++){ctx.beginPath();ctx.moveTo(-p.face*r*1.3,i*r*.45-r*.3);ctx.lineTo(-p.face*r*2.3,i*r*.45-r*.3);ctx.stroke()}}
+  const sq=wind?.88:1;
+  ell(-r*.42,r*.5,r*.34,r*.18,'#ff9f2e'); ell(r*.42,r*.5,r*.34,r*.18,'#ff9f2e'); // 발
+  const fl=wind?-.9:-.25; // 날개: 힘 모을 때 번쩍
+  ctx.save();ctx.translate(-r*.82,-r*.25);ctx.rotate(-fl);ell(0,r*.3,r*.22,r*.55,'#1d2a3d');ctx.restore();
+  ctx.save();ctx.translate(r*.82,-r*.25);ctx.rotate(fl);ell(0,r*.3,r*.22,r*.55,'#1d2a3d');ctx.restore();
+  ctx.save();ctx.scale(1/sq,sq);ell(0,-r*.35,r*.92,r*1.05,'#1d2a3d');ell(0,-r*.18,r*.66,r*.8,'#fbfdff');ctx.restore();
+  ctx.fillStyle=col(p.ti);ctx.beginPath();ctx.roundRect(-r*.8,-r*.72*sq,r*1.6,r*.3,r*.15);ctx.fill(); // 목도리
+  ctx.fillRect(p.face>0?-r*.55:r*.32,-r*.6*sq,r*.24,r*.55);
+  const ey=-r*1.0*sq, ex=p.face*r*.12;
+  ell(ex-r*.3,ey,r*.2,r*.22,'#fff');ell(ex+r*.3,ey,r*.2,r*.22,'#fff');
+  ell(ex-r*.3+p.face*r*.06,ey+r*.02,r*.1,r*.12,'#0b1220');ell(ex+r*.3+p.face*r*.06,ey+r*.02,r*.1,r*.12,'#0b1220');
+  ctx.fillStyle='#ff9f2e';ctx.beginPath();ctx.moveTo(ex-r*.16,ey+r*.24);ctx.lineTo(ex+r*.16,ey+r*.24);ctx.lineTo(ex+p.face*r*.3,ey+r*.44);ctx.fill();
+  if(crown){ctx.fillStyle='#ffd166';ctx.beginPath();const cy=-r*1.55;ctx.moveTo(-r*.5,cy);ctx.lineTo(-r*.5,cy-r*.45);ctx.lineTo(-r*.25,cy-r*.2);ctx.lineTo(0,cy-r*.55);ctx.lineTo(r*.25,cy-r*.2);ctx.lineTo(r*.5,cy-r*.45);ctx.lineTo(r*.5,cy);ctx.fill()}
+  ctx.restore();
+  if(label){
+    const me=p.ti===meId, w=me?44:34, ly=y+bob-r*2.1-(crown?r*.5:0);
+    ctx.save();ctx.globalAlpha=alpha;pill(x-w/2*k,ly-6*k,w*k,12*k,me?'#fff':col(p.ti));
+    txt(me?'나 '+p.type:p.type,x,ly+.5*k,F(900,8.5*k),me?'#06172b':'#0b1220');ctx.restore();
+  }
+}
+function floePath(r){ctx.beginPath();ctx.arc(CX,CY,r,0,7)}
+function draw(){
+  ctx.setTransform(1,0,0,1,0,0);
+  const g=ctx.createLinearGradient(0,0,0,1920);g.addColorStop(0,'#0a2a4e');g.addColorStop(1,'#041325');ctx.fillStyle=g;ctx.fillRect(0,0,1080,1920);
+  ctx.setTransform(S,0,0,S,0,0);
+  // 물결
+  ctx.strokeStyle='rgba(120,190,255,.10)';ctx.lineWidth=1.2;
+  for(let y=150;y<VH;y+=26){ctx.beginPath();for(let x=-10;x<=W+10;x+=10)ctx.lineTo(x,y+Math.sin(x*.05+vt*1.5+y)*3);ctx.stroke()}
+  ctx.save();ctx.translate(CX,CY);ctx.scale(zoom,zoom);ctx.translate(-CX,-CY); // 월드(얼음판·펭귄)만 줌
+  // 떨어져 나간 얼음 조각
+  for(const c of chunks){const m=(c.a0+c.a1)/2,d=c.v*c.life,a=Math.max(0,1-c.life/2.4);
+    ctx.save();ctx.globalAlpha=a;ctx.translate(CX+Math.cos(m)*d,CY+Math.sin(m)*d+c.life*6);ctx.rotate(c.rot);
+    ctx.beginPath();ctx.arc(0,0,c.r1,c.a0,c.a1);ctx.arc(0,0,c.r0,c.a1,c.a0,true);ctx.closePath();
+    ctx.fillStyle='#bfe0f7';ctx.fill();ctx.strokeStyle='#7fb3d8';ctx.lineWidth=1.5;ctx.stroke();ctx.restore()}
+  // 얼음판 (두께 + 윗면)
+  ctx.beginPath();ctx.ellipse(CX,CY+7,Rcur,Rcur,0,0,7);ctx.fillStyle='#6fa6cf';ctx.fill();
+  floePath(Rcur);const ig=ctx.createRadialGradient(CX-Rcur*.3,CY-Rcur*.4,Rcur*.1,CX,CY,Rcur);ig.addColorStop(0,'#ffffff');ig.addColorStop(1,'#cfe8fb');ctx.fillStyle=ig;ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.9)';ctx.lineWidth=2;ctx.stroke();
+  ctx.strokeStyle='rgba(120,170,210,.35)';ctx.lineWidth=1;
+  for(let i=0;i<5;i++){const a=i*1.3+.4;ctx.beginPath();ctx.moveTo(CX+Math.cos(a)*Rcur*.2,CY+Math.sin(a)*Rcur*.2);ctx.lineTo(CX+Math.cos(a+.2)*Rcur*.55,CY+Math.sin(a+.2)*Rcur*.55);ctx.stroke()}
+  // 금 가는 경고
+  const wr=state==='play'?warnR():null;
+  if(wr){const blink=.45+.45*Math.abs(Math.sin(vt*9));ctx.strokeStyle=`rgba(230,60,90,${blink})`;ctx.lineWidth=2.4;ctx.beginPath();
+    for(let i=0;i<=48;i++){const a=i/48*Math.PI*2,rr=wr+((i*37)%7-3)*.9;ctx.lineTo(CX+Math.cos(a)*rr,CY+Math.sin(a)*rr)}ctx.stroke();
+    txt('얼음이 갈라져요!',CX,CY+Rcur+22,F(900,14),'#ff6b8a','center',4)}
+  // 물보라
+  for(const s of splashes){if(s.t>1.2)continue;const k=s.t/1.2;ctx.strokeStyle=`rgba(255,255,255,${.8*(1-k)})`;ctx.lineWidth=2;
+    for(let i=0;i<2;i++){ctx.beginPath();ctx.ellipse(s.x,s.y+6,(8+k*30)*(1-i*.4),(3+k*10)*(1-i*.4),0,0,7);ctx.stroke()}
+    for(let i=0;i<6;i++){const a=-Math.PI*(i+.5)/6,h=Math.sin(Math.min(1,k*1.6)*Math.PI)*16;ell(s.x+Math.cos(a)*k*22,s.y+Math.sin(a)*h,1.8,1.8,`rgba(220,240,255,${1-k})`)}}
+  // 펭귄 (빠지는 중인 펭귄은 가라앉으며 작아짐)
+  for(const p of [...ps].sort((a,b)=>a.y-b.y)){
+    if(p.alive) penguin(p,p.x,p.y,1,1,state==='done'&&p===winner);
+    else if(p.sink<.8) penguin(p,p.x,p.y+p.sink*14,1-p.sink*.6,1-p.sink/.8,false,p.sink<.3);
+  }
+  ctx.restore();
+  // 위쪽 현황: 16칸 (탈락한 MBTI는 흐리게)
+  ctx.globalAlpha=1;
+  if(state!=='pick')TYPES.forEach((t,i)=>{const x=14+(i%8)*41.5,y=214+Math.floor(i/8)*20,p=ps.find(q=>q.ti===i),on=p.alive;
+    ctx.globalAlpha=on?1:.32;pill(x,y,38,16,on?col(i):'#20344f');txt(t,x+19,y+8.5,F(900,9),on?'#0b1220':'#93a9c9');
+    if(!on){ctx.strokeStyle='#93a9c9';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x+6,y+8);ctx.lineTo(x+32,y+8);ctx.stroke()}});
+  ctx.globalAlpha=1;
+  if(state==='play'||state==='done'){pill(W-104,14,92,26,'rgba(3,14,30,.75)');txt('남은 펭귄 '+alive().length,W-58,27.5,F(900,12),'#fff')}
+  if(!REEL&&state!=='pick'){txt('MBTI 펭귄 서바이벌',14,26,F(900,15),'#fff','left',3)}
+  // 쿨타임(게임)
+  const me=ps.find(p=>p.ti===meId);
+  if(!REEL&&me&&me.alive&&state==='play'){ctx.strokeStyle='rgba(255,255,255,.8)';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(CX+(me.x-CX)*zoom,CY+(me.y+PR*.55-CY)*zoom,PR*1.25*zoom,-Math.PI/2,-Math.PI/2+Math.PI*2*(1-cool/.9));ctx.stroke()}
+  if(!REEL&&me&&!me.alive&&state==='play'){pill(CX-110,560,220,40,'rgba(3,14,30,.85)');txt(`풍덩! ${me.type} ${me.rank}위 · 끝까지 보기`,CX,580,F(900,14),'#ffd166')}
+  for(const f of snow){ctx.globalAlpha=.7;ell(f.x,f.y,f.s,f.s,'#fff')}ctx.globalAlpha=1;
+  // 제목 · 카운트다운 · GO
+  if(state==='title'){ctx.fillStyle='rgba(3,14,30,.55)';ctx.fillRect(0,300,W,200);txt('갈라지는 얼음판',CX,350,F(800,18),'#9fd6ff','center',4);txt('끝까지 살아남을 MBTI는?',CX,398,F(900,28),'#fff','center',6)}
+  if(state==='count'){const n=3-Math.floor(countT/(COUNT_S/3));txt(Math.max(1,n)+'',CX,CY,F(900,110),'#fff','center',8)}
+  if(state==='play'&&EV.some(e=>e.type==='go')&&vt-EV.find(e=>e.type==='go').t<.6) txt('밀어내!',CX,CY,F(900,64),'#ffd166','center',8);
+  if(state==='play'&&finalOn&&vt-EV.find(e=>e.type==='final').t<1.4) txt('마지막 1:1!',CX,CY-Rcur*zoom-24,F(900,22),'#ffd166','center',5);
+  if(ts<1&&state==='play') txt('슬로모션',CX,CY+Rcur*zoom+34,F(900,18),'#ffd166','center',4);
+  if(state==='pick') drawPick();
+  if(state==='done') drawDone();
+}
+function drawPick(){
+  ctx.fillStyle='rgba(3,14,30,.78)';ctx.fillRect(0,0,W,VH);
+  txt('MBTI 펭귄 서바이벌',CX,92,F(900,28),'#fff','center',5);
+  txt('얼음판에서 밀어내기! 마지막 1마리가 우승',CX,126,F(700,13),'#9fd6ff');
+  txt('내 MBTI를 골라요',CX,186,F(900,18),'#ffd166');
+  TYPES.forEach((t,i)=>{const [x,y]=pickXY(i);pill(x,y,76,44,col(i));txt(t,x+38,y+23,F(900,17),'#0b1220')});
+  txt('탭한 곳으로 내 펭귄이 돌진해요',CX,470,F(700,13),'#cfe3ff');
+  txt('얼음은 점점 갈라져요. 가장자리 조심!',CX,492,F(700,13),'#cfe3ff');
+}
+const pickXY=i=>[16+(i%4)*84,214+Math.floor(i/4)*56];
+function drawDone(){
+  const k=Math.min(1,doneT/.6),e=1-Math.pow(1-k,3);
+  ctx.fillStyle=`rgba(3,14,30,${.84*e})`;ctx.fillRect(0,0,W,VH);ctx.globalAlpha=e;
+  // 위 140~205는 릴스 자막 자리라 비워 둔다
+  txt('우승',CX,232,F(900,16),'#ffd166','center',3);
+  penguin(winner,CX,322,2.4,e,true,false);
+  txt(winner.type+'!',CX,382,F(900,40),'#fff','center',6);
+  const byRank=[...ps].sort((a,b)=>a.rank-b.rank);
+  byRank.forEach((p,i)=>{const x=14+(i%4)*84,y=410+Math.floor(i/4)*38,me=p.ti===meId;
+    pill(x,y,80,30,me?'#fff':i===0?'#ffd166':'rgba(255,255,255,.10)');
+    txt(p.rank+'위',x+22,y+15.5,F(900,12),me||i===0?'#0b1220':'#93a9c9');txt(p.type,x+54,y+15.5,F(900,13),me||i===0?'#0b1220':col(p.ti))});
+  if(!REEL&&meId>=0){const m=ps.find(p=>p.ti===meId);txt(m.rank===1?'내 펭귄 우승! 🎉':`내 펭귄 ${m.type}: 16마리 중 ${m.rank}위`,CX,172,F(900,18),'#ffd166','center',4)}
+  ctx.globalAlpha=1;
+}
+
+/* ---------- 게임 모드 ---------- */
+let ac=null, soundOn=true;
+function tone(f,v=.08,len=.15,type='triangle',f2=f){if(!soundOn||REEL)return;ac=ac||new AudioContext();const o=ac.createOscillator(),g=ac.createGain();o.type=type;o.frequency.setValueAtTime(f,ac.currentTime);o.frequency.exponentialRampToValueAtTime(f2,ac.currentTime+len);g.gain.setValueAtTime(v,ac.currentTime);g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+len);o.connect(g).connect(ac.destination);o.start();o.stop(ac.currentTime+len)}
+let heard=0;
+function sounds(){for(;heard<EV.length;heard++){const e=EV[heard];
+  if(e.type==='hit')tone(160,.12,.12,'square',80);if(e.type==='fall')tone(900,.1,.35,'sine',180);if(e.type==='crack')tone(300,.06,.25,'sawtooth',120);
+  if(e.type==='break')tone(90,.15,.5,'sawtooth',50);if(e.type==='count')tone(660,.08,.15);if(e.type==='go')tone(1320,.1,.35);
+  if(e.type==='win')[523,659,784,1047].forEach((f,i)=>setTimeout(()=>tone(f,.1,.35),i*120))}}
+function pos(e){const b=cv.getBoundingClientRect();return [(e.clientX-b.left)/b.width*W,(e.clientY-b.top)/b.height*VH]}
+const world=([x,y])=>[CX+(x-CX)/zoom,CY+(y-CY)/zoom];
+cv.addEventListener('pointerdown',e=>{
+  const [x,y]=pos(e);
+  if(state==='pick'){TYPES.forEach((t,i)=>{const [px,py]=pickXY(i);if(x>=px&&x<=px+76&&y>=py&&y<=py+44){reset(Math.floor(Math.random()*1e9),i);heard=0;tone(880,.08,.12)}});return}
+  const me=ps.find(p=>p.ti===meId);
+  if(state==='play'&&me&&me.alive&&cool<=0){const [wx,wy]=world([x,y]),a=Math.atan2(wy-me.y,wx-me.x);me.vx+=Math.cos(a)*300;me.vy+=Math.sin(a)*300;me.st='dash';me.timer=.45;cool=.9;tone(520,.06,.12,'sine',900)}
+  if(state==='done'&&doneT>1) {reset(1);heard=0}
+});
+addEventListener('keydown',e=>{if(e.code==='Space'&&state==='done'){reset(1);heard=0}});
+document.getElementById('again').onclick=()=>{reset(1);heard=0};
+document.getElementById('snd').onclick=e=>{soundOn=!soundOn;e.target.textContent=soundOn?'소리 켜짐':'소리 꺼짐'};
+document.getElementById('share').onclick=async()=>{
+  const m=ps.find(p=>p.ti===meId), url=location.href.split('?')[0];
+  const text=m&&state==='done'?`MBTI 펭귄 서바이벌에서 내 ${m.type} 펭귄이 16마리 중 ${m.rank}위! 너는 몇 위야?`:'MBTI 펭귄 서바이벌: 갈라지는 얼음판에서 마지막까지 살아남을 MBTI는?';
+  try{if(navigator.share)await navigator.share({text,url});else{await navigator.clipboard.writeText(text+' '+url);document.getElementById('share').textContent='복사했어요!'}}catch(e){}
+};
+if(!REEL){
+  reset(1);
+  let last=performance.now();
+  const loop=now=>{const dt=Math.min(.05,(now-last)/1000);last=now;if(state!=='pick')advance(dt);else vt+=dt;sounds();draw();requestAnimationFrame(loop)};
+  requestAnimationFrame(loop);
+}
+
+/* ---------- 릴스 모드: 미리 돌려서 재밌는 판 고르기 ---------- */
+if(REEL){
+  const FDT=1/30;
+  const simulate=(sd,slow)=>{reset(sd);slowWin=slow;while(!(state==='done'&&doneT>=HOLD_S)&&vt<90)advance(FDT);
+    const win=EV.find(e=>e.type==='win'),fin=EV.find(e=>e.type==='final'),go=EV.find(e=>e.type==='go');
+    return {sd,dur:vt,ev:EV,winT:win?.t,duel:win&&fin?win.t-fin.t:0,play:win?win.t-go.t:99,winner:winner?.type};};
+  let best=null;
+  for(let sd=1;sd<=40;sd++){
+    const r=simulate(sd,null); if(!r.winT) continue;
+    const falls=r.ev.filter(e=>e.type==='fall').length;
+    const score=Math.abs(r.play-24)/4+(r.duel<2.5?4:0)+(r.duel>9?3:0)+(falls<15?5:0);
+    if(!best||score<best.score) best={...r,score};
+  }
+  // 우승 결정 순간만 슬로모션 (물리는 같은 스텝이라 판은 그대로)
+  simulate(best.sd,null); const wSim=simT; const r=simulate(best.sd,[wSim-.9,wSim+.1]);
+  window.PICK={sd:best.sd,win:r.winner,duel:+best.duel.toFixed(2)}; window.DUR=+r.dur.toFixed(3); window.EVENTS=r.ev;
+  reset(best.sd); slowWin=[wSim-.9,wSim+.1];
+  let shown=-1;
+  window.frame=t=>{const f=Math.round(t/FDT);while(shown<f){if(shown>=0)advance(FDT);shown++}draw()};
+  document.fonts.ready.then(()=>{frame(0);document.title='ready'});
+}
+</script>
